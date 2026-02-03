@@ -227,7 +227,7 @@ def tts_custom(req: CustomVoiceRequest) -> Response:
 
 @app.post("/v1/tts/custom/stream")
 def tts_custom_stream(req: CustomVoiceRequest) -> StreamingResponse:
-    wav, sr = _run_custom_voice(req)
+    wav, sr = _run_custom_voice(req, streaming=True)
     audio_bytes = _encode_audio(wav, sr, req.output_format)
     return _audio_stream_response(audio_bytes, req.output_format)
 
@@ -241,7 +241,7 @@ def tts_design(req: VoiceDesignRequest) -> Response:
 
 @app.post("/v1/tts/design/stream")
 def tts_design_stream(req: VoiceDesignRequest) -> StreamingResponse:
-    wav, sr = _run_voice_design(req)
+    wav, sr = _run_voice_design(req, streaming=True)
     audio_bytes = _encode_audio(wav, sr, req.output_format)
     return _audio_stream_response(audio_bytes, req.output_format)
 
@@ -267,12 +267,15 @@ def tts_clone_stream(
     speed: float = Form(1.0),
     output_format: str = Form("wav"),
 ) -> StreamingResponse:
-    wav, sr = _run_voice_clone(text, ref_audio, ref_text, speed)
+    wav, sr = _run_voice_clone(text, ref_audio, ref_text, speed, streaming=True)
     audio_bytes = _encode_audio(wav, sr, output_format)
     return _audio_stream_response(audio_bytes, output_format)
 
 
-def _run_custom_voice(req: CustomVoiceRequest) -> Tuple[np.ndarray, int]:
+def _run_custom_voice(
+    req: CustomVoiceRequest,
+    streaming: bool = False,
+) -> Tuple[np.ndarray, int]:
     model = MODEL_MANAGER.get("custom")
     voice = req.voice.strip().lower()
     if voice not in CUSTOM_VOICES:
@@ -285,7 +288,7 @@ def _run_custom_voice(req: CustomVoiceRequest) -> Tuple[np.ndarray, int]:
         "voice": voice,
         "speaker": voice,
         "speed": req.speed,
-        "non_streaming_mode": True,
+        "non_streaming_mode": not streaming,
     }
     if req.language:
         kwargs["language"] = req.language
@@ -295,13 +298,16 @@ def _run_custom_voice(req: CustomVoiceRequest) -> Tuple[np.ndarray, int]:
     return _run_inference(model.generate_custom_voice, **kwargs)
 
 
-def _run_voice_design(req: VoiceDesignRequest) -> Tuple[np.ndarray, int]:
+def _run_voice_design(
+    req: VoiceDesignRequest,
+    streaming: bool = False,
+) -> Tuple[np.ndarray, int]:
     model = MODEL_MANAGER.get("design")
     kwargs: Dict[str, Any] = {
         "text": req.text,
         "prompt_text": req.prompt_text,
         "speed": req.speed,
-        "non_streaming_mode": True,
+        "non_streaming_mode": not streaming,
     }
     if req.extra_params:
         kwargs.update(req.extra_params)
@@ -314,6 +320,7 @@ def _run_voice_clone(
     ref_audio: UploadFile,
     ref_text: Optional[str],
     speed: float,
+    streaming: bool = False,
 ) -> Tuple[np.ndarray, int]:
     if speed < 0.25 or speed > 4.0:
         raise HTTPException(status_code=400, detail="speed must be in [0.25, 4.0]")
@@ -333,7 +340,7 @@ def _run_voice_clone(
             "text": text,
             "ref_audio": str(ref_path),
             "speed": speed,
-            "non_streaming_mode": True,
+            "non_streaming_mode": not streaming,
         }
         if ref_text:
             kwargs["ref_text"] = ref_text
