@@ -12,13 +12,22 @@ venv/
 
 # Env files
 .env
+.env.*
+!.env.example
 
 # Local artifacts
 models/
 hf_download_progress.log
+*.log
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.python-version

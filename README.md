@@ -1,4 +1,5 @@
 # Qwen3-TTS HTTP Service (Docker, Jetson)
+[![CI](https://github.com/biglone/qwen3-tts-service/actions/workflows/ci.yml/badge.svg)](https://github.com/biglone/qwen3-tts-service/actions/workflows/ci.yml)
 
 HTTP service built on `qwen-tts` with:
 - CustomVoice (built-in voices)
@@ -133,3 +134,8 @@ Streaming: `POST /v1/tts/clone/stream`
 - `QWEN_TTS_MP3_BITRATE` (default `192k`)
 - `QWEN_TTS_STREAM_CHUNK_SIZE` (default 65536)
 - `QWEN_TTS_SERIALIZE` (default `true`)
+- `QWEN_TTS_WARMUP` (default `true`)
+- `QWEN_TTS_WARMUP_TEXT` (default `hello`)
+- `QWEN_TTS_WARMUP_VOICE` (default `vivian`)
+- `QWEN_TTS_WARMUP_LANGUAGE` (optional)
+- `QWEN_TTS_WARMUP_SPEED` (default `1.0`)
