@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Qwen3 TTS Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="backdrop">
+      <div class="orb orb-1"></div>
+      <div class="orb orb-2"></div>
+      <div class="orb orb-3"></div>
+    </div>
+
+    <div class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Qwen3-TTS Cloud Studio</p>
+          <h1>把文本和声音，快速变成可用的语音资产</h1>
+          <p class="lead">
+            一站式完成文本转语音、声音设计和声音克隆。全部通过你的
+            Qwen3 TTS 服务直连完成。
+          </p>
+          <div class="meta">
+            <span class="pill">GPU Ready</span>
+            <span class="pill">WAV / MP3</span>
+            <span class="pill">Custom / Design / Clone</span>
+          </div>
+        </div>
+        <div class="hero-card">
+          <div class="label">Service Base URL</div>
+          <div class="base-url">
+            <input id="baseUrl" type="text" placeholder="https://qwen3-tts.biglone.tech" />
+            <button id="saveBaseUrl" type="button">应用</button>
+          </div>
+          <p class="hint">默认使用当前域名。可切换到内网或本地端口。</p>
+          <div class="stats">
+            <div>
+              <div class="stat-title">状态</div>
+              <div id="statusBadge" class="stat-value">待检测</div>
+            </div>
+            <div>
+              <div class="stat-title">最后耗时</div>
+              <div id="latency" class="stat-value">—</div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="console">
+        <div class="console-header">
+          <div>
+            <h2>控制台</h2>
+            <p>选择模式并提交，你会直接拿到可播放的音频文件。</p>
+          </div>
+          <div class="console-actions">
+            <button id="refreshVoices" class="ghost" type="button">刷新内置声音</button>
+            <button id="checkHealth" class="ghost" type="button">健康检查</button>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="custom" type="button">文本转语音</button>
+          <button class="tab" data-tab="design" type="button">声音设计</button>
+          <button class="tab" data-tab="clone" type="button">声音克隆</button>
+        </div>
+
+        <section class="panes">
+          <div class="pane active" data-pane="custom">
+            <form id="form-custom" class="form-grid">
+              <label>
+                <span>文本</span>
+                <textarea
+                  name="text"
+                  rows="5"
+                  placeholder="请输入要合成的文字..."
+                  required
+                ></textarea>
+              </label>
+
+              <div class="field-row">
+                <label>
+                  <span>内置声音</span>
+                  <select id="customVoice" name="voice"></select>
+                </label>
+                <label>
+                  <span>语速</span>
+                  <input name="speed" type="number" min="0.25" max="4" step="0.05" value="1" />
+                </label>
+              </div>
+
+              <div class="field-row">
+                <label>
+                  <span>语言 (可选)</span>
+                  <input name="language" type="text" placeholder="auto / zh / en" />
+                </label>
+                <label>
+                  <span>输出格式</span>
+                  <select name="output_format">
+                    <option value="wav" selected>WAV</option>
+                    <option value="mp3">MP3</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="actions">
+                <button type="submit">生成语音</button>
+                <span class="help">首个请求可能稍慢，已自动预热。</span>
+              </div>
+            </form>
+
+            <div class="result" id="customResult">
+              <div class="result-header">输出</div>
+              <audio id="customAudio" controls></audio>
+              <a id="customDownload" class="download" href="#" download>下载音频</a>
+              <div id="customMessage" class="message"></div>
+            </div>
+          </div>
+
+          <div class="pane" data-pane="design">
+            <form id="form-design" class="form-grid">
+              <label>
+                <span>文本</span>
+                <textarea name="text" rows="5" placeholder="请输入要合成的文字..." required></textarea>
+              </label>
+
+              <label>
+                <span>声音描述</span>
+                <input
+                  name="prompt_text"
+                  type="text"
+                  placeholder="例如：温柔、干净、略带磁性的男声"
+                  required
+                />
+              </label>
+
+              <div class="field-row">
+                <label>
+                  <span>语速</span>
+                  <input name="speed" type="number" min="0.25" max="4" step="0.05" value="1" />
+                </label>
+                <label>
+                  <span>输出格式</span>
+                  <select name="output_format">
+                    <option value="wav" selected>WAV</option>
+                    <option value="mp3">MP3</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="actions">
+                <button type="submit">生成设计音色</button>
+              </div>
+            </form>
+
+            <div class="result" id="designResult">
+              <div class="result-header">输出</div>
+              <audio id="designAudio" controls></audio>
+              <a id="designDownload" class="download" href="#" download>下载音频</a>
+              <div id="designMessage" class="message"></div>
+            </div>
+          </div>
+
+          <div class="pane" data-pane="clone">
+            <form id="form-clone" class="form-grid">
+              <label>
+                <span>文本</span>
+                <textarea name="text" rows="5" placeholder="请输入要合成的文字..." required></textarea>
+              </label>
+
+              <label>
+                <span>参考音频</span>
+                <input name="ref_audio" type="file" accept="audio/*" required />
+              </label>
+
+              <label>
+                <span>参考文本 (可选)</span>
+                <input name="ref_text" type="text" placeholder="参考音频对应的文本" />
+              </label>
+
+              <div class="field-row">
+                <label>
+                  <span>语速</span>
+                  <input name="speed" type="number" min="0.25" max="4" step="0.05" value="1" />
+                </label>
+                <label>
+                  <span>输出格式</span>
+                  <select name="output_format">
+                    <option value="wav" selected>WAV</option>
+                    <option value="mp3">MP3</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="actions">
+                <button type="submit">克隆生成</button>
+                <span class="help">建议上传 10~20 秒清晰人声。</span>
+              </div>
+            </form>
+
+            <div class="result" id="cloneResult">
+              <div class="result-header">输出</div>
+              <audio id="cloneAudio" controls></audio>
+              <a id="cloneDownload" class="download" href="#" download>下载音频</a>
+              <div id="cloneMessage" class="message"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <section class="tips">
+        <h3>使用建议</h3>
+        <div class="tip-grid">
+          <div class="tip">短文本适合实时交互，长文本建议分段合成。</div>
+          <div class="tip">设计与克隆对语气描述很敏感，尽量使用具体形容词。</div>
+          <div class="tip">如果你在外网访问，请确认 tunnel 正常在线。</div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>Qwen3 TTS Service</span>
+        <span>Built for Jetson & Cloudflare Tunnel</span>
+      </footer>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

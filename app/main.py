@@ -16,7 +16,8 @@ import numpy as np
 import soundfile as sf
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from huggingface_hub import snapshot_download
 from pydantic import BaseModel, Field
 from qwen_tts import Qwen3TTSModel
@@ -155,6 +156,10 @@ MODEL_MANAGER = ModelManager(MODEL_CACHE_MAX)
 INFER_LOCK = threading.Lock()
 
 app = FastAPI(title="Qwen3 TTS Service", version="1.0")
+WEB_DIR = Path(__file__).resolve().parent / "web"
+ASSETS_DIR = WEB_DIR / "assets"
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 
 @app.on_event("startup")
@@ -194,6 +199,13 @@ def _warmup_task() -> None:
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/")
+def index() -> Response:
+    if WEB_DIR.exists():
+        return FileResponse(WEB_DIR / "index.html")
+    return Response(content="Qwen3 TTS Service", media_type="text/plain")
 
 
 @app.get("/v1/voices")

@@ -1,0 +1,253 @@
+const byId = (id) => document.getElementById(id);
+const statusBadge = byId("statusBadge");
+const latencyLabel = byId("latency");
+const baseUrlInput = byId("baseUrl");
+const saveBaseUrlBtn = byId("saveBaseUrl");
+const refreshVoicesBtn = byId("refreshVoices");
+const checkHealthBtn = byId("checkHealth");
+const customVoiceSelect = byId("customVoice");
+
+const baseKey = "qwen3-tts-base-url";
+
+function normalizeBaseUrl(value) {
+  if (!value) return window.location.origin;
+  return value.replace(/\/$/, "");
+}
+
+function getBaseUrl() {
+  return normalizeBaseUrl(baseUrlInput.value.trim());
+}
+
+function setStatus(text, tone = "idle") {
+  statusBadge.textContent = text;
+  statusBadge.className = "stat-value";
+  statusBadge.classList.add(`status-${tone}`);
+}
+
+function setLatency(ms) {
+  latencyLabel.textContent = ms;
+}
+
+function showMessage(targetId, text, tone = "idle") {
+  const el = byId(targetId);
+  el.textContent = text;
+  el.className = "message";
+  el.classList.add(`status-${tone}`);
+}
+
+function setDownload(anchorId, url, format) {
+  const link = byId(anchorId);
+  link.href = url;
+  link.download = `tts_${Date.now()}.${format}`;
+}
+
+function setAudio(audioId, url) {
+  const audio = byId(audioId);
+  audio.src = url;
+}
+
+function setBusy(form, busy) {
+  const button = form.querySelector("button[type='submit']");
+  if (button) {
+    if (!button.dataset.label) {
+      button.dataset.label = button.textContent;
+    }
+    button.disabled = busy;
+    button.textContent = busy ? "处理中..." : button.dataset.label;
+  }
+}
+
+function readFormValue(form, name) {
+  const field = form.querySelector(`[name='${name}']`);
+  if (!field) return "";
+  return field.value || "";
+}
+
+async function fetchJson(url, options) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      message = data.detail || JSON.stringify(data);
+    } catch (err) {
+      message = await res.text();
+    }
+    throw new Error(message || `HTTP ${res.status}`);
+  }
+  return res;
+}
+
+async function checkHealth() {
+  const baseUrl = getBaseUrl();
+  setStatus("检查中...", "warn");
+  try {
+    const res = await fetchJson(`${baseUrl}/healthz`);
+    const data = await res.json();
+    setStatus(data.status === "ok" ? "在线" : "异常", data.status === "ok" ? "ok" : "warn");
+  } catch (err) {
+    setStatus("不可用", "bad");
+  }
+}
+
+async function loadVoices() {
+  const baseUrl = getBaseUrl();
+  customVoiceSelect.innerHTML = "";
+  try {
+    const res = await fetchJson(`${baseUrl}/v1/voices`);
+    const data = await res.json();
+    const voices = data.data || [];
+    if (!voices.length) throw new Error("无内置声音");
+    voices.forEach((voice) => {
+      const option = document.createElement("option");
+      option.value = voice;
+      option.textContent = voice;
+      customVoiceSelect.appendChild(option);
+    });
+    customVoiceSelect.value = voices[0];
+  } catch (err) {
+    const option = document.createElement("option");
+    option.value = "vivian";
+    option.textContent = "vivian";
+    customVoiceSelect.appendChild(option);
+    showMessage("customMessage", "未能加载内置声音，已使用默认值。", "warn");
+  }
+}
+
+function setupTabs() {
+  const tabs = document.querySelectorAll(".tab");
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      tabs.forEach((btn) => btn.classList.remove("active"));
+      tab.classList.add("active");
+      const target = tab.dataset.tab;
+      document.querySelectorAll(".pane").forEach((pane) => {
+        pane.classList.toggle("active", pane.dataset.pane === target);
+      });
+    });
+  });
+}
+
+async function handleCustomSubmit(event) {
+  event.preventDefault();
+  const form = event.target;
+  const payload = {
+    text: readFormValue(form, "text"),
+    voice: readFormValue(form, "voice") || "vivian",
+    speed: Number(readFormValue(form, "speed")) || 1,
+    output_format: readFormValue(form, "output_format") || "wav",
+  };
+  const language = readFormValue(form, "language");
+  if (language) payload.language = language;
+
+  setBusy(form, true);
+  showMessage("customMessage", "生成中...", "warn");
+  const start = performance.now();
+  try {
+    const res = await fetchJson(`${getBaseUrl()}/v1/tts/custom`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    setAudio("customAudio", url);
+    setDownload("customDownload", url, payload.output_format);
+    showMessage("customMessage", `完成 (${(blob.size / 1024).toFixed(1)} KB)`, "ok");
+    setLatency(`${Math.round(performance.now() - start)} ms`);
+    setStatus("完成", "ok");
+  } catch (err) {
+    showMessage("customMessage", err.message || "请求失败", "bad");
+    setStatus("失败", "bad");
+  } finally {
+    setBusy(form, false);
+  }
+}
+
+async function handleDesignSubmit(event) {
+  event.preventDefault();
+  const form = event.target;
+  const payload = {
+    text: readFormValue(form, "text"),
+    prompt_text: readFormValue(form, "prompt_text"),
+    speed: Number(readFormValue(form, "speed")) || 1,
+    output_format: readFormValue(form, "output_format") || "wav",
+  };
+
+  setBusy(form, true);
+  showMessage("designMessage", "生成中...", "warn");
+  const start = performance.now();
+  try {
+    const res = await fetchJson(`${getBaseUrl()}/v1/tts/design`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    setAudio("designAudio", url);
+    setDownload("designDownload", url, payload.output_format);
+    showMessage("designMessage", `完成 (${(blob.size / 1024).toFixed(1)} KB)`, "ok");
+    setLatency(`${Math.round(performance.now() - start)} ms`);
+    setStatus("完成", "ok");
+  } catch (err) {
+    showMessage("designMessage", err.message || "请求失败", "bad");
+    setStatus("失败", "bad");
+  } finally {
+    setBusy(form, false);
+  }
+}
+
+async function handleCloneSubmit(event) {
+  event.preventDefault();
+  const form = event.target;
+  const formData = new FormData(form);
+  const outputFormat = formData.get("output_format") || "wav";
+
+  setBusy(form, true);
+  showMessage("cloneMessage", "生成中...", "warn");
+  const start = performance.now();
+  try {
+    const res = await fetchJson(`${getBaseUrl()}/v1/tts/clone`, {
+      method: "POST",
+      body: formData,
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    setAudio("cloneAudio", url);
+    setDownload("cloneDownload", url, outputFormat);
+    showMessage("cloneMessage", `完成 (${(blob.size / 1024).toFixed(1)} KB)`, "ok");
+    setLatency(`${Math.round(performance.now() - start)} ms`);
+    setStatus("完成", "ok");
+  } catch (err) {
+    showMessage("cloneMessage", err.message || "请求失败", "bad");
+    setStatus("失败", "bad");
+  } finally {
+    setBusy(form, false);
+  }
+}
+
+function initBaseUrl() {
+  const saved = localStorage.getItem(baseKey);
+  baseUrlInput.value = saved || window.location.origin;
+}
+
+saveBaseUrlBtn.addEventListener("click", () => {
+  const value = getBaseUrl();
+  baseUrlInput.value = value;
+  localStorage.setItem(baseKey, value);
+  loadVoices();
+  checkHealth();
+});
+
+refreshVoicesBtn.addEventListener("click", loadVoices);
+checkHealthBtn.addEventListener("click", checkHealth);
+
+byId("form-custom").addEventListener("submit", handleCustomSubmit);
+byId("form-design").addEventListener("submit", handleDesignSubmit);
+byId("form-clone").addEventListener("submit", handleCloneSubmit);
+
+initBaseUrl();
+setupTabs();
+loadVoices();
+checkHealth();
