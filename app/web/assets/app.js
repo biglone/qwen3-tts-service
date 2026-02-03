@@ -68,16 +68,25 @@ function isStreamEnabled(form) {
   return Boolean(toggle && toggle.checked);
 }
 
+async function readErrorMessage(res) {
+  try {
+    const text = await res.text();
+    if (!text) return `HTTP ${res.status}`;
+    try {
+      const data = JSON.parse(text);
+      return data.detail || data.message || JSON.stringify(data);
+    } catch (err) {
+      return text;
+    }
+  } catch (err) {
+    return `HTTP ${res.status}`;
+  }
+}
+
 async function fetchJson(url, options) {
   const res = await fetch(url, options);
   if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      message = data.detail || JSON.stringify(data);
-    } catch (err) {
-      message = await res.text();
-    }
+    const message = await readErrorMessage(res);
     throw new Error(message || `HTTP ${res.status}`);
   }
   return res;
@@ -127,13 +136,7 @@ class SegmentPlayer {
 async function streamSSE(url, options, onEvent) {
   const res = await fetch(url, options);
   if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      message = data.detail || JSON.stringify(data);
-    } catch (err) {
-      message = await res.text();
-    }
+    const message = await readErrorMessage(res);
     throw new Error(message || `HTTP ${res.status}`);
   }
   const reader = res.body.getReader();
@@ -249,6 +252,7 @@ async function runStreamSegments({
     showMessage(messageId, err.message || "请求失败", "bad");
     setStatus("失败", "bad");
   } finally {
+    streamControllers[mode] = null;
     setBusy(form, false);
   }
 }
