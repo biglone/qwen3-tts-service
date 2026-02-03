@@ -63,6 +63,11 @@ function readFormValue(form, name) {
   return field.value || "";
 }
 
+function isStreamEnabled(form) {
+  const toggle = form.querySelector("[name='stream_segments']");
+  return Boolean(toggle && toggle.checked);
+}
+
 async function fetchJson(url, options) {
   const res = await fetch(url, options);
   if (!res.ok) {
@@ -76,6 +81,176 @@ async function fetchJson(url, options) {
     throw new Error(message || `HTTP ${res.status}`);
   }
   return res;
+}
+
+function b64ToArrayBuffer(b64) {
+  const binary = atob(b64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+class SegmentPlayer {
+  constructor(audioEl) {
+    this.audioEl = audioEl;
+    this.ctx = null;
+    this.nextTime = 0;
+  }
+
+  async reset() {
+    if (this.ctx) {
+      await this.ctx.close();
+    }
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AudioCtx();
+    await this.ctx.resume();
+    this.nextTime = this.ctx.currentTime;
+  }
+
+  async enqueue(buffer) {
+    if (!this.ctx) {
+      await this.reset();
+    }
+    const audioBuffer = await this.ctx.decodeAudioData(buffer.slice(0));
+    const source = this.ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.ctx.destination);
+    const startAt = Math.max(this.nextTime, this.ctx.currentTime + 0.05);
+    source.start(startAt);
+    this.nextTime = startAt + audioBuffer.duration;
+  }
+}
+
+async function streamSSE(url, options, onEvent) {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      message = data.detail || JSON.stringify(data);
+    } catch (err) {
+      message = await res.text();
+    }
+    throw new Error(message || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split(/\n\n/);
+    buffer = parts.pop() || "";
+    for (const chunk of parts) {
+      const lines = chunk.split(/\n/);
+      let event = "message";
+      const dataLines = [];
+      lines.forEach((line) => {
+        if (line.startsWith("event:")) {
+          event = line.replace("event:", "").trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.replace("data:", "").trim());
+        }
+      });
+      if (!dataLines.length) continue;
+      const dataText = dataLines.join("\n");
+      let payload = dataText;
+      try {
+        payload = JSON.parse(dataText);
+      } catch (err) {
+        payload = { raw: dataText };
+      }
+      await onEvent(event, payload);
+    }
+  }
+}
+
+const streamControllers = {
+  custom: null,
+  design: null,
+  clone: null,
+};
+
+const players = {
+  custom: new SegmentPlayer(byId("customAudio")),
+  design: new SegmentPlayer(byId("designAudio")),
+  clone: new SegmentPlayer(byId("cloneAudio")),
+};
+
+async function runStreamSegments({
+  mode,
+  form,
+  url,
+  options,
+  messageId,
+  downloadId,
+  outputFormat,
+}) {
+  if (streamControllers[mode]) {
+    streamControllers[mode].abort();
+  }
+  const controller = new AbortController();
+  streamControllers[mode] = controller;
+  options.signal = controller.signal;
+
+  const player = players[mode];
+  await player.reset();
+  setBusy(form, true);
+  showMessage(messageId, "分段生成中...", "warn");
+  const start = performance.now();
+  let total = null;
+  let received = 0;
+
+  try {
+    await streamSSE(url, options, async (event, payload) => {
+      if (event === "meta") {
+        total = payload.segments || null;
+        showMessage(messageId, `开始生成，共 ${total || "?"} 段。`, "warn");
+        return;
+      }
+      if (event === "chunk") {
+        received += 1;
+        if (payload.audio_b64) {
+          const buffer = b64ToArrayBuffer(payload.audio_b64);
+          await player.enqueue(buffer);
+        }
+        const progress = total ? `${received}/${total}` : `${received}`;
+        showMessage(messageId, `已生成 ${progress} 段`, "warn");
+        return;
+      }
+      if (event === "final" && payload.audio_b64) {
+        const buffer = b64ToArrayBuffer(payload.audio_b64);
+        const blob = new Blob([buffer], {
+          type: outputFormat === "mp3" ? "audio/mpeg" : "audio/wav",
+        });
+        const fileUrl = URL.createObjectURL(blob);
+        setAudio(`${mode}Audio`, fileUrl);
+        setDownload(downloadId, fileUrl, outputFormat);
+        return;
+      }
+      if (event === "error") {
+        throw new Error(payload.detail || "流式请求失败");
+      }
+    });
+
+    showMessage(messageId, "分段完成，可回放或下载。", "ok");
+    setLatency(`${Math.round(performance.now() - start)} ms`);
+    setStatus("完成", "ok");
+  } catch (err) {
+    if (err.name === "AbortError") {
+      showMessage(messageId, "已中止请求。", "warn");
+      return;
+    }
+    showMessage(messageId, err.message || "请求失败", "bad");
+    setStatus("失败", "bad");
+  } finally {
+    setBusy(form, false);
+  }
 }
 
 async function checkHealth() {
@@ -140,6 +315,23 @@ async function handleCustomSubmit(event) {
   const language = readFormValue(form, "language");
   if (language) payload.language = language;
 
+  if (isStreamEnabled(form)) {
+    await runStreamSegments({
+      mode: "custom",
+      form,
+      url: `${getBaseUrl()}/v1/tts/custom/stream_segments`,
+      options: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      messageId: "customMessage",
+      downloadId: "customDownload",
+      outputFormat: payload.output_format,
+    });
+    return;
+  }
+
   setBusy(form, true);
   showMessage("customMessage", "生成中...", "warn");
   const start = performance.now();
@@ -174,6 +366,23 @@ async function handleDesignSubmit(event) {
     output_format: readFormValue(form, "output_format") || "wav",
   };
 
+  if (isStreamEnabled(form)) {
+    await runStreamSegments({
+      mode: "design",
+      form,
+      url: `${getBaseUrl()}/v1/tts/design/stream_segments`,
+      options: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      messageId: "designMessage",
+      downloadId: "designDownload",
+      outputFormat: payload.output_format,
+    });
+    return;
+  }
+
   setBusy(form, true);
   showMessage("designMessage", "生成中...", "warn");
   const start = performance.now();
@@ -203,6 +412,22 @@ async function handleCloneSubmit(event) {
   const form = event.target;
   const formData = new FormData(form);
   const outputFormat = formData.get("output_format") || "wav";
+
+  if (isStreamEnabled(form)) {
+    await runStreamSegments({
+      mode: "clone",
+      form,
+      url: `${getBaseUrl()}/v1/tts/clone/stream_segments`,
+      options: {
+        method: "POST",
+        body: formData,
+      },
+      messageId: "cloneMessage",
+      downloadId: "cloneDownload",
+      outputFormat,
+    });
+    return;
+  }
 
   setBusy(form, true);
   showMessage("cloneMessage", "生成中...", "warn");

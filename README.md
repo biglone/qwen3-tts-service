@@ -76,6 +76,18 @@ Body:
 
 Streaming: `POST /v1/tts/custom/stream`
 
+### Segment Streaming (SSE)
+`POST /v1/tts/custom/stream_segments`
+
+Server-Sent Events stream that yields base64 audio chunks as they are generated.
+
+Example:
+```
+curl -N -H "Content-Type: application/json" \
+  -d '{"text":"Hello there.","voice":"vivian","output_format":"wav"}' \
+  http://localhost:8000/v1/tts/custom/stream_segments
+```
+
 ### VoiceDesign
 `POST /v1/tts/design`
 
@@ -90,6 +102,8 @@ Body:
 ```
 
 Streaming: `POST /v1/tts/design/stream`
+
+Segment streaming: `POST /v1/tts/design/stream_segments`
 
 ### VoiceClone
 `POST /v1/tts/clone` (multipart/form-data)
@@ -113,6 +127,8 @@ curl -X POST http://localhost:8000/v1/tts/clone \
 
 Streaming: `POST /v1/tts/clone/stream`
 
+Segment streaming: `POST /v1/tts/clone/stream_segments`
+
 ## Notes
 
 - `/stream` endpoints return chunked audio after synthesis completes.
@@ -134,6 +150,9 @@ Streaming: `POST /v1/tts/clone/stream`
 - `QWEN_TTS_MP3_BITRATE` (default `192k`)
 - `QWEN_TTS_STREAM_CHUNK_SIZE` (default 65536)
 - `QWEN_TTS_SERIALIZE` (default `true`)
+- `QWEN_TTS_STREAM_SEGMENT_MAX_CHARS` (default `120`)
+- `QWEN_TTS_STREAM_SEGMENT_MIN_CHARS` (default `20`)
+- `QWEN_TTS_STREAM_RETURN_FULL` (default `true`)
 - `QWEN_TTS_WARMUP` (default `true`)
 - `QWEN_TTS_WARMUP_TEXT` (default `hello`)
 - `QWEN_TTS_WARMUP_VOICE` (default `vivian`)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import gc
 import inspect
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -60,6 +62,9 @@ WARMUP_ENABLED = os.getenv("QWEN_TTS_WARMUP", "true").lower() == "true"
 WARMUP_TEXT = os.getenv("QWEN_TTS_WARMUP_TEXT", "hello")
 WARMUP_VOICE = os.getenv("QWEN_TTS_WARMUP_VOICE", "vivian")
 WARMUP_LANGUAGE = os.getenv("QWEN_TTS_WARMUP_LANGUAGE")
+STREAM_SEGMENT_MAX_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MAX_CHARS", "120"))
+STREAM_SEGMENT_MIN_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MIN_CHARS", "20"))
+STREAM_RETURN_FULL = os.getenv("QWEN_TTS_STREAM_RETURN_FULL", "true").lower() == "true"
 
 
 MODEL_IDS = {
@@ -67,6 +72,8 @@ MODEL_IDS = {
     "design": DESIGN_MODEL_ID,
     "clone": CLONE_MODEL_ID,
 }
+
+_SENTENCE_BREAKS = set("。！？!?；;，,、\n")
 
 
 def _get_float_env(name: str, default: float) -> float:
@@ -196,6 +203,70 @@ def _warmup_task() -> None:
         return
 
 
+def _segment_text(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    segments: list[str] = []
+    buf: list[str] = []
+    for ch in text:
+        buf.append(ch)
+        if ch in _SENTENCE_BREAKS:
+            segment = "".join(buf).strip()
+            if segment:
+                segments.append(segment)
+            buf = []
+    tail = "".join(buf).strip()
+    if tail:
+        segments.append(tail)
+
+    if not segments:
+        return [text]
+
+    expanded: list[str] = []
+    for seg in segments:
+        if len(seg) <= STREAM_SEGMENT_MAX_CHARS:
+            expanded.append(seg)
+            continue
+        for i in range(0, len(seg), STREAM_SEGMENT_MAX_CHARS):
+            expanded.append(seg[i : i + STREAM_SEGMENT_MAX_CHARS])
+
+    merged: list[str] = []
+    buffer = ""
+    for seg in expanded:
+        if not buffer:
+            buffer = seg
+            continue
+        if len(buffer) < STREAM_SEGMENT_MIN_CHARS:
+            buffer += seg
+            continue
+        if len(buffer) + len(seg) <= STREAM_SEGMENT_MAX_CHARS:
+            buffer += seg
+            continue
+        merged.append(buffer)
+        buffer = seg
+    if buffer:
+        merged.append(buffer)
+    return merged
+
+
+def _sse_event(event: str, payload: Dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+def _to_wav_array(wav: Any) -> np.ndarray:
+    if isinstance(wav, (list, tuple)) and wav:
+        wav = wav[0]
+    return np.asarray(wav, dtype=np.float32)
+
+
+def _exc_detail(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return str(exc)
+
+
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     return {"status": "ok"}
@@ -232,6 +303,11 @@ def tts_custom_stream(req: CustomVoiceRequest) -> StreamingResponse:
     return _audio_stream_response(audio_bytes, req.output_format)
 
 
+@app.post("/v1/tts/custom/stream_segments")
+def tts_custom_stream_segments(req: CustomVoiceRequest) -> StreamingResponse:
+    return _stream_custom_segments(req)
+
+
 @app.post("/v1/tts/design")
 def tts_design(req: VoiceDesignRequest) -> Response:
     wav, sr = _run_voice_design(req)
@@ -244,6 +320,11 @@ def tts_design_stream(req: VoiceDesignRequest) -> StreamingResponse:
     wav, sr = _run_voice_design(req, streaming=True)
     audio_bytes = _encode_audio(wav, sr, req.output_format)
     return _audio_stream_response(audio_bytes, req.output_format)
+
+
+@app.post("/v1/tts/design/stream_segments")
+def tts_design_stream_segments(req: VoiceDesignRequest) -> StreamingResponse:
+    return _stream_design_segments(req)
 
 
 @app.post("/v1/tts/clone")
@@ -270,6 +351,17 @@ def tts_clone_stream(
     wav, sr = _run_voice_clone(text, ref_audio, ref_text, speed, streaming=True)
     audio_bytes = _encode_audio(wav, sr, output_format)
     return _audio_stream_response(audio_bytes, output_format)
+
+
+@app.post("/v1/tts/clone/stream_segments")
+def tts_clone_stream_segments(
+    text: str = Form(...),
+    ref_audio: UploadFile = File(...),
+    ref_text: Optional[str] = Form(None),
+    speed: float = Form(1.0),
+    output_format: str = Form("wav"),
+) -> StreamingResponse:
+    return _stream_clone_segments(text, ref_audio, ref_text, speed, output_format)
 
 
 def _run_custom_voice(
@@ -324,7 +416,6 @@ def _run_voice_clone(
 ) -> Tuple[np.ndarray, int]:
     if speed < 0.25 or speed > 4.0:
         raise HTTPException(status_code=400, detail="speed must be in [0.25, 4.0]")
-    model = MODEL_MANAGER.get("clone")
     if ref_audio is None:
         raise HTTPException(status_code=400, detail="ref_audio is required")
 
@@ -335,17 +426,35 @@ def _run_voice_clone(
         ref_path = Path(tmpdir) / f"ref{suffix}"
         with ref_path.open("wb") as f:
             f.write(ref_audio.file.read())
+        return _run_voice_clone_from_path(
+            text,
+            ref_path,
+            ref_text=ref_text,
+            speed=speed,
+            streaming=streaming,
+        )
 
-        kwargs: Dict[str, Any] = {
-            "text": text,
-            "ref_audio": str(ref_path),
-            "speed": speed,
-            "non_streaming_mode": not streaming,
-        }
-        if ref_text:
-            kwargs["ref_text"] = ref_text
-        kwargs = _filter_kwargs(model.generate_voice_clone, kwargs)
-        return _run_inference(model.generate_voice_clone, **kwargs)
+
+def _run_voice_clone_from_path(
+    text: str,
+    ref_path: Path,
+    ref_text: Optional[str],
+    speed: float,
+    streaming: bool = False,
+) -> Tuple[np.ndarray, int]:
+    if speed < 0.25 or speed > 4.0:
+        raise HTTPException(status_code=400, detail="speed must be in [0.25, 4.0]")
+    model = MODEL_MANAGER.get("clone")
+    kwargs: Dict[str, Any] = {
+        "text": text,
+        "ref_audio": str(ref_path),
+        "speed": speed,
+        "non_streaming_mode": not streaming,
+    }
+    if ref_text:
+        kwargs["ref_text"] = ref_text
+    kwargs = _filter_kwargs(model.generate_voice_clone, kwargs)
+    return _run_inference(model.generate_voice_clone, **kwargs)
 
 
 def _run_inference(fn, **kwargs) -> Tuple[np.ndarray, int]:
@@ -353,6 +462,182 @@ def _run_inference(fn, **kwargs) -> Tuple[np.ndarray, int]:
         with INFER_LOCK:
             return fn(**kwargs)
     return fn(**kwargs)
+
+
+def _stream_custom_segments(req: CustomVoiceRequest) -> StreamingResponse:
+    segments = _segment_text(req.text)
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    def event_stream():
+        total = len(segments)
+        if total == 0:
+            yield _sse_event("error", {"detail": "Empty text"})
+            return
+        try:
+            yield _sse_event("meta", {"segments": total, "format": req.output_format})
+            wav_parts: list[np.ndarray] = []
+            sample_rate: Optional[int] = None
+            for idx, segment in enumerate(segments, start=1):
+                seg_req = CustomVoiceRequest(
+                    text=segment,
+                    voice=req.voice,
+                    language=req.language,
+                    speed=req.speed,
+                    output_format=req.output_format,
+                    extra_params=req.extra_params,
+                )
+                wav, sr = _run_custom_voice(seg_req, streaming=True)
+                wav_np = _to_wav_array(wav)
+                sample_rate = sr
+                if STREAM_RETURN_FULL:
+                    wav_parts.append(wav_np)
+                audio_bytes = _encode_audio(wav_np, sr, req.output_format)
+                payload = {
+                    "index": idx,
+                    "total": total,
+                    "text": segment,
+                    "format": req.output_format,
+                    "sample_rate": sr,
+                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
+                }
+                yield _sse_event("chunk", payload)
+            if STREAM_RETURN_FULL and wav_parts and sample_rate:
+                full_wav = np.concatenate(wav_parts)
+                audio_bytes = _encode_audio(full_wav, sample_rate, req.output_format)
+                payload = {
+                    "format": req.output_format,
+                    "sample_rate": sample_rate,
+                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "duration_ms": int(len(full_wav) / max(sample_rate, 1) * 1000),
+                }
+                yield _sse_event("final", payload)
+            yield _sse_event("done", {"segments": total})
+        except Exception as exc:
+            yield _sse_event("error", {"detail": _exc_detail(exc)})
+            return
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+def _stream_design_segments(req: VoiceDesignRequest) -> StreamingResponse:
+    segments = _segment_text(req.text)
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    def event_stream():
+        total = len(segments)
+        if total == 0:
+            yield _sse_event("error", {"detail": "Empty text"})
+            return
+        try:
+            yield _sse_event("meta", {"segments": total, "format": req.output_format})
+            wav_parts: list[np.ndarray] = []
+            sample_rate: Optional[int] = None
+            for idx, segment in enumerate(segments, start=1):
+                seg_req = VoiceDesignRequest(
+                    text=segment,
+                    prompt_text=req.prompt_text,
+                    speed=req.speed,
+                    output_format=req.output_format,
+                    extra_params=req.extra_params,
+                )
+                wav, sr = _run_voice_design(seg_req, streaming=True)
+                wav_np = _to_wav_array(wav)
+                sample_rate = sr
+                if STREAM_RETURN_FULL:
+                    wav_parts.append(wav_np)
+                audio_bytes = _encode_audio(wav_np, sr, req.output_format)
+                payload = {
+                    "index": idx,
+                    "total": total,
+                    "text": segment,
+                    "format": req.output_format,
+                    "sample_rate": sr,
+                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
+                }
+                yield _sse_event("chunk", payload)
+            if STREAM_RETURN_FULL and wav_parts and sample_rate:
+                full_wav = np.concatenate(wav_parts)
+                audio_bytes = _encode_audio(full_wav, sample_rate, req.output_format)
+                payload = {
+                    "format": req.output_format,
+                    "sample_rate": sample_rate,
+                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "duration_ms": int(len(full_wav) / max(sample_rate, 1) * 1000),
+                }
+                yield _sse_event("final", payload)
+            yield _sse_event("done", {"segments": total})
+        except Exception as exc:
+            yield _sse_event("error", {"detail": _exc_detail(exc)})
+            return
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+def _stream_clone_segments(
+    text: str,
+    ref_audio: UploadFile,
+    ref_text: Optional[str],
+    speed: float,
+    output_format: str,
+) -> StreamingResponse:
+    segments = _segment_text(text)
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    def event_stream():
+        total = len(segments)
+        if total == 0:
+            yield _sse_event("error", {"detail": "Empty text"})
+            return
+        try:
+            yield _sse_event("meta", {"segments": total, "format": output_format})
+            wav_parts: list[np.ndarray] = []
+            sample_rate: Optional[int] = None
+            with tempfile.TemporaryDirectory() as tmpdir:
+                suffix = Path(ref_audio.filename or "ref.wav").suffix or ".wav"
+                ref_path = Path(tmpdir) / f"ref{suffix}"
+                with ref_path.open("wb") as f:
+                    f.write(ref_audio.file.read())
+                for idx, segment in enumerate(segments, start=1):
+                    wav, sr = _run_voice_clone_from_path(
+                        segment,
+                        ref_path=ref_path,
+                        ref_text=ref_text,
+                        speed=speed,
+                        streaming=True,
+                    )
+                    wav_np = _to_wav_array(wav)
+                    sample_rate = sr
+                    if STREAM_RETURN_FULL:
+                        wav_parts.append(wav_np)
+                    audio_bytes = _encode_audio(wav_np, sr, output_format)
+                    payload = {
+                        "index": idx,
+                        "total": total,
+                        "text": segment,
+                        "format": output_format,
+                        "sample_rate": sr,
+                        "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                        "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
+                    }
+                    yield _sse_event("chunk", payload)
+            if STREAM_RETURN_FULL and wav_parts and sample_rate:
+                full_wav = np.concatenate(wav_parts)
+                audio_bytes = _encode_audio(full_wav, sample_rate, output_format)
+                payload = {
+                    "format": output_format,
+                    "sample_rate": sample_rate,
+                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                    "duration_ms": int(len(full_wav) / max(sample_rate, 1) * 1000),
+                }
+                yield _sse_event("final", payload)
+            yield _sse_event("done", {"segments": total})
+        except Exception as exc:
+            yield _sse_event("error", {"detail": _exc_detail(exc)})
+            return
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
 
 
 def _encode_audio(wav: Any, sr: int, fmt: str) -> bytes:
