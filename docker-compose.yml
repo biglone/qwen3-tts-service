@@ -26,7 +26,7 @@ services:
       QWEN_TTS_MAX_NEW_TOKENS: "1024"
       QWEN_TTS_STREAM_BATCH_SIZE: "4"
       QWEN_TTS_DTYPE: float16
-      QWEN_TTS_DEVICE_MAP: auto
+      QWEN_TTS_DEVICE_MAP: cuda:0
       HF_HOME: /models
       TRANSFORMERS_CACHE: /models
     volumes:
