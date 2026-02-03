@@ -250,6 +250,15 @@ async function runStreamSegments({
         setDownload(downloadId, fileUrl, outputFormat);
         return;
       }
+      if (event === "final" && payload.download_url) {
+        const baseUrl = getBaseUrl();
+        const url = payload.download_url.startsWith("http")
+          ? payload.download_url
+          : `${baseUrl}${payload.download_url}`;
+        setAudio(`${mode}Audio`, url);
+        setDownload(downloadId, url, outputFormat);
+        return;
+      }
       if (event === "error") {
         throw new Error(payload.detail || "流式请求失败");
       }

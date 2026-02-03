@@ -69,6 +69,11 @@ STREAM_RETURN_FULL = os.getenv("QWEN_TTS_STREAM_RETURN_FULL", "true").lower() ==
 STREAM_KEEPALIVE_SECONDS = float(os.getenv("QWEN_TTS_STREAM_KEEPALIVE_SECONDS", "8"))
 MAX_NEW_TOKENS = os.getenv("QWEN_TTS_MAX_NEW_TOKENS")
 STREAM_BATCH_SIZE = max(int(os.getenv("QWEN_TTS_STREAM_BATCH_SIZE", "1")), 1)
+STREAM_RETURN_LINK = os.getenv("QWEN_TTS_STREAM_RETURN_LINK", "false").lower() == "true"
+STREAM_DOWNLOAD_DIR = Path(
+    os.getenv("QWEN_TTS_STREAM_DOWNLOAD_DIR", "/tmp/qwen3_tts_stream")
+).resolve()
+STREAM_DOWNLOAD_TTL = int(os.getenv("QWEN_TTS_STREAM_DOWNLOAD_TTL", "3600"))
 
 
 MODEL_IDS = {
@@ -166,6 +171,10 @@ class ModelManager:
 MODEL_MANAGER = ModelManager(MODEL_CACHE_MAX)
 INFER_LOCK = threading.Lock()
 STREAM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+DOWNLOAD_LOCK = threading.Lock()
+DOWNLOAD_INDEX: Dict[str, Tuple[Path, float, str, str]] = {}
+
+STREAM_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Qwen3 TTS Service", version="1.0")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -272,6 +281,32 @@ def _exc_detail(exc: Exception) -> str:
     return str(exc)
 
 
+def _cleanup_downloads() -> None:
+    now = time.time()
+    with DOWNLOAD_LOCK:
+        expired = [k for k, (_, exp, _, _) in DOWNLOAD_INDEX.items() if exp <= now]
+        for key in expired:
+            path, _, _, _ = DOWNLOAD_INDEX.pop(key, (None, None, None, None))
+            if path and path.exists():
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+
+
+def _register_download(audio_bytes: bytes, fmt: str) -> str:
+    _cleanup_downloads()
+    file_id = uuid.uuid4().hex
+    filename = f"qwen3_tts_{file_id}.{fmt}"
+    path = STREAM_DOWNLOAD_DIR / filename
+    path.write_bytes(audio_bytes)
+    expires_at = time.time() + STREAM_DOWNLOAD_TTL
+    media_type = _media_type(fmt)
+    with DOWNLOAD_LOCK:
+        DOWNLOAD_INDEX[file_id] = (path, expires_at, media_type, filename)
+    return file_id
+
+
 @app.get("/healthz")
 def healthz() -> Dict[str, str]:
     return {"status": "ok"}
@@ -292,6 +327,20 @@ def list_voices() -> Dict[str, Any]:
 @app.get("/v1/models")
 def list_models() -> Dict[str, Any]:
     return {"data": MODEL_IDS}
+
+
+@app.get("/v1/tts/download/{file_id}")
+def download_tts(file_id: str) -> FileResponse:
+    _cleanup_downloads()
+    with DOWNLOAD_LOCK:
+        entry = DOWNLOAD_INDEX.get(file_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Download not found or expired.")
+    path, expires_at, media_type, filename = entry
+    if time.time() > expires_at or not path.exists():
+        raise HTTPException(status_code=404, detail="Download not found or expired.")
+    headers = {"Cache-Control": "no-store"}
+    return FileResponse(path, media_type=media_type, filename=filename, headers=headers)
 
 
 @app.post("/v1/tts/custom")
@@ -539,6 +588,7 @@ def _stream_custom_segments(req: CustomVoiceRequest) -> StreamingResponse:
             yield _sse_event("meta", {"segments": total, "format": req.output_format})
             wav_parts: list[np.ndarray] = []
             sample_rate: Optional[int] = None
+            collect_full = STREAM_RETURN_FULL or STREAM_RETURN_LINK
             for start in range(0, total, STREAM_BATCH_SIZE):
                 batch_segments = segments[start : start + STREAM_BATCH_SIZE]
                 seg_req = CustomVoiceRequest(
@@ -567,7 +617,7 @@ def _stream_custom_segments(req: CustomVoiceRequest) -> StreamingResponse:
                 sample_rate = sr
                 for offset, segment in enumerate(batch_segments):
                     wav_np = _to_wav_array(wavs[offset])
-                    if STREAM_RETURN_FULL:
+                    if collect_full:
                         wav_parts.append(wav_np)
                     audio_bytes = _encode_audio(wav_np, sr, req.output_format)
                     payload = {
@@ -580,15 +630,19 @@ def _stream_custom_segments(req: CustomVoiceRequest) -> StreamingResponse:
                         "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
                     }
                     yield _sse_event("chunk", payload)
-            if STREAM_RETURN_FULL and wav_parts and sample_rate:
+            if collect_full and wav_parts and sample_rate:
                 full_wav = np.concatenate(wav_parts)
                 audio_bytes = _encode_audio(full_wav, sample_rate, req.output_format)
                 payload = {
                     "format": req.output_format,
                     "sample_rate": sample_rate,
-                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
                     "duration_ms": int(len(full_wav) / max(sample_rate, 1) * 1000),
                 }
+                if STREAM_RETURN_FULL:
+                    payload["audio_b64"] = base64.b64encode(audio_bytes).decode("ascii")
+                if STREAM_RETURN_LINK:
+                    file_id = _register_download(audio_bytes, req.output_format)
+                    payload["download_url"] = f"/v1/tts/download/{file_id}"
                 yield _sse_event("final", payload)
             yield _sse_event("done", {"segments": total})
         except Exception as exc:
@@ -611,6 +665,7 @@ def _stream_design_segments(req: VoiceDesignRequest) -> StreamingResponse:
             yield _sse_event("meta", {"segments": total, "format": req.output_format})
             wav_parts: list[np.ndarray] = []
             sample_rate: Optional[int] = None
+            collect_full = STREAM_RETURN_FULL or STREAM_RETURN_LINK
             for start in range(0, total, STREAM_BATCH_SIZE):
                 batch_segments = segments[start : start + STREAM_BATCH_SIZE]
                 seg_req = VoiceDesignRequest(
@@ -638,7 +693,7 @@ def _stream_design_segments(req: VoiceDesignRequest) -> StreamingResponse:
                 sample_rate = sr
                 for offset, segment in enumerate(batch_segments):
                     wav_np = _to_wav_array(wavs[offset])
-                    if STREAM_RETURN_FULL:
+                    if collect_full:
                         wav_parts.append(wav_np)
                     audio_bytes = _encode_audio(wav_np, sr, req.output_format)
                     payload = {
@@ -651,15 +706,19 @@ def _stream_design_segments(req: VoiceDesignRequest) -> StreamingResponse:
                         "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
                     }
                     yield _sse_event("chunk", payload)
-            if STREAM_RETURN_FULL and wav_parts and sample_rate:
+            if collect_full and wav_parts and sample_rate:
                 full_wav = np.concatenate(wav_parts)
                 audio_bytes = _encode_audio(full_wav, sample_rate, req.output_format)
                 payload = {
                     "format": req.output_format,
                     "sample_rate": sample_rate,
-                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
                     "duration_ms": int(len(full_wav) / max(sample_rate, 1) * 1000),
                 }
+                if STREAM_RETURN_FULL:
+                    payload["audio_b64"] = base64.b64encode(audio_bytes).decode("ascii")
+                if STREAM_RETURN_LINK:
+                    file_id = _register_download(audio_bytes, req.output_format)
+                    payload["download_url"] = f"/v1/tts/download/{file_id}"
                 yield _sse_event("final", payload)
             yield _sse_event("done", {"segments": total})
         except Exception as exc:
@@ -688,6 +747,7 @@ def _stream_clone_segments(
             yield _sse_event("meta", {"segments": total, "format": output_format})
             wav_parts: list[np.ndarray] = []
             sample_rate: Optional[int] = None
+            collect_full = STREAM_RETURN_FULL or STREAM_RETURN_LINK
             with tempfile.TemporaryDirectory() as tmpdir:
                 suffix = Path(ref_audio.filename or "ref.wav").suffix or ".wav"
                 ref_path = Path(tmpdir) / f"ref{suffix}"
@@ -710,7 +770,7 @@ def _stream_clone_segments(
                             yield _sse_event("keepalive", {"index": idx, "total": total})
                     wav_np = _to_wav_array(wav)
                     sample_rate = sr
-                    if STREAM_RETURN_FULL:
+                    if collect_full:
                         wav_parts.append(wav_np)
                     audio_bytes = _encode_audio(wav_np, sr, output_format)
                     payload = {
@@ -723,15 +783,19 @@ def _stream_clone_segments(
                         "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
                     }
                     yield _sse_event("chunk", payload)
-            if STREAM_RETURN_FULL and wav_parts and sample_rate:
+            if collect_full and wav_parts and sample_rate:
                 full_wav = np.concatenate(wav_parts)
                 audio_bytes = _encode_audio(full_wav, sample_rate, output_format)
                 payload = {
                     "format": output_format,
                     "sample_rate": sample_rate,
-                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
                     "duration_ms": int(len(full_wav) / max(sample_rate, 1) * 1000),
                 }
+                if STREAM_RETURN_FULL:
+                    payload["audio_b64"] = base64.b64encode(audio_bytes).decode("ascii")
+                if STREAM_RETURN_LINK:
+                    file_id = _register_download(audio_bytes, output_format)
+                    payload["download_url"] = f"/v1/tts/download/{file_id}"
                 yield _sse_event("final", payload)
             yield _sse_event("done", {"segments": total})
         except Exception as exc:
@@ -836,3 +900,5 @@ def _get_torch_dtype(name: str):
     if key in {"float32", "fp32"}:
         return torch.float32
     raise ValueError(f"Unsupported dtype: {name}")
+import time
+import uuid
