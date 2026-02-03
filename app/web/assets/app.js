@@ -8,6 +8,7 @@ const checkHealthBtn = byId("checkHealth");
 const customVoiceSelect = byId("customVoice");
 
 const baseKey = "qwen3-tts-base-url";
+const streamPrefKey = (mode) => `qwen3-tts-stream-${mode}`;
 
 function normalizeBaseUrl(value) {
   if (!value) return window.location.origin;
@@ -472,6 +473,22 @@ function initBaseUrl() {
   baseUrlInput.value = saved || window.location.origin;
 }
 
+function initStreamPreference(formId, mode) {
+  const form = byId(formId);
+  if (!form) return;
+  const toggle = form.querySelector("[name='stream_segments']");
+  if (!toggle) return;
+  const stored = localStorage.getItem(streamPrefKey(mode));
+  if (stored === null) {
+    localStorage.setItem(streamPrefKey(mode), String(toggle.checked));
+  } else {
+    toggle.checked = stored === "true";
+  }
+  toggle.addEventListener("change", () => {
+    localStorage.setItem(streamPrefKey(mode), String(toggle.checked));
+  });
+}
+
 saveBaseUrlBtn.addEventListener("click", () => {
   const value = getBaseUrl();
   baseUrlInput.value = value;
@@ -488,6 +505,9 @@ byId("form-design").addEventListener("submit", handleDesignSubmit);
 byId("form-clone").addEventListener("submit", handleCloneSubmit);
 
 initBaseUrl();
+initStreamPreference("form-custom", "custom");
+initStreamPreference("form-design", "design");
+initStreamPreference("form-clone", "clone");
 setupTabs();
 loadVoices();
 checkHealth();
