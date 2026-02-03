@@ -46,6 +46,14 @@ function setAudio(audioId, url) {
   audio.src = url;
 }
 
+function resetResult(mode, downloadId, messageId) {
+  setAudio(`${mode}Audio`, "");
+  const link = byId(downloadId);
+  link.removeAttribute("href");
+  link.removeAttribute("download");
+  showMessage(messageId, "", "idle");
+}
+
 function setBusy(form, busy) {
   const button = form.querySelector("button[type='submit']");
   if (button) {
@@ -310,6 +318,7 @@ function setupTabs() {
 async function handleCustomSubmit(event) {
   event.preventDefault();
   const form = event.target;
+  resetResult("custom", "customDownload", "customMessage");
   const payload = {
     text: readFormValue(form, "text"),
     voice: readFormValue(form, "voice") || "vivian",
@@ -363,6 +372,7 @@ async function handleCustomSubmit(event) {
 async function handleDesignSubmit(event) {
   event.preventDefault();
   const form = event.target;
+  resetResult("design", "designDownload", "designMessage");
   const payload = {
     text: readFormValue(form, "text"),
     prompt_text: readFormValue(form, "prompt_text"),
@@ -414,6 +424,7 @@ async function handleDesignSubmit(event) {
 async function handleCloneSubmit(event) {
   event.preventDefault();
   const form = event.target;
+  resetResult("clone", "cloneDownload", "cloneMessage");
   const formData = new FormData(form);
   const outputFormat = formData.get("output_format") || "wav";
 
