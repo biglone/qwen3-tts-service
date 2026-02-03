@@ -67,6 +67,7 @@ STREAM_SEGMENT_MAX_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MAX_CHARS", "1
 STREAM_SEGMENT_MIN_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MIN_CHARS", "20"))
 STREAM_RETURN_FULL = os.getenv("QWEN_TTS_STREAM_RETURN_FULL", "true").lower() == "true"
 STREAM_KEEPALIVE_SECONDS = float(os.getenv("QWEN_TTS_STREAM_KEEPALIVE_SECONDS", "8"))
+MAX_NEW_TOKENS = os.getenv("QWEN_TTS_MAX_NEW_TOKENS")
 
 
 MODEL_IDS = {
@@ -389,6 +390,8 @@ def _run_custom_voice(
         kwargs["language"] = req.language
     if req.extra_params:
         kwargs.update(req.extra_params)
+    if MAX_NEW_TOKENS:
+        kwargs["max_new_tokens"] = int(MAX_NEW_TOKENS)
     kwargs = _filter_kwargs(model.generate_custom_voice, kwargs)
     return _run_inference(model.generate_custom_voice, **kwargs)
 
@@ -406,6 +409,8 @@ def _run_voice_design(
     }
     if req.extra_params:
         kwargs.update(req.extra_params)
+    if MAX_NEW_TOKENS:
+        kwargs["max_new_tokens"] = int(MAX_NEW_TOKENS)
     kwargs = _filter_kwargs(model.generate_voice_design, kwargs)
     return _run_inference(model.generate_voice_design, **kwargs)
 
@@ -456,6 +461,8 @@ def _run_voice_clone_from_path(
     }
     if ref_text:
         kwargs["ref_text"] = ref_text
+    if MAX_NEW_TOKENS:
+        kwargs["max_new_tokens"] = int(MAX_NEW_TOKENS)
     kwargs = _filter_kwargs(model.generate_voice_clone, kwargs)
     return _run_inference(model.generate_voice_clone, **kwargs)
 

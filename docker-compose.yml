@@ -21,6 +21,9 @@ services:
       QWEN_TTS_WARMUP: "true"
       QWEN_TTS_WARMUP_TEXT: "hello"
       QWEN_TTS_WARMUP_VOICE: "vivian"
+      QWEN_TTS_STREAM_SEGMENT_MAX_CHARS: "60"
+      QWEN_TTS_STREAM_SEGMENT_MIN_CHARS: "10"
+      QWEN_TTS_MAX_NEW_TOKENS: "1024"
       QWEN_TTS_DTYPE: float16
       QWEN_TTS_DEVICE_MAP: auto
       HF_HOME: /models
