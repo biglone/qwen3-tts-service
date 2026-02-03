@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import gc
 import inspect
 import io
@@ -65,6 +66,7 @@ WARMUP_LANGUAGE = os.getenv("QWEN_TTS_WARMUP_LANGUAGE")
 STREAM_SEGMENT_MAX_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MAX_CHARS", "120"))
 STREAM_SEGMENT_MIN_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MIN_CHARS", "20"))
 STREAM_RETURN_FULL = os.getenv("QWEN_TTS_STREAM_RETURN_FULL", "true").lower() == "true"
+STREAM_KEEPALIVE_SECONDS = float(os.getenv("QWEN_TTS_STREAM_KEEPALIVE_SECONDS", "8"))
 
 
 MODEL_IDS = {
@@ -161,6 +163,7 @@ class ModelManager:
 
 MODEL_MANAGER = ModelManager(MODEL_CACHE_MAX)
 INFER_LOCK = threading.Lock()
+STREAM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 app = FastAPI(title="Qwen3 TTS Service", version="1.0")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -486,7 +489,13 @@ def _stream_custom_segments(req: CustomVoiceRequest) -> StreamingResponse:
                     output_format=req.output_format,
                     extra_params=req.extra_params,
                 )
-                wav, sr = _run_custom_voice(seg_req, streaming=True)
+                future = STREAM_EXECUTOR.submit(_run_custom_voice, seg_req, True)
+                while True:
+                    try:
+                        wav, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
+                        break
+                    except concurrent.futures.TimeoutError:
+                        yield _sse_event("keepalive", {"index": idx, "total": total})
                 wav_np = _to_wav_array(wav)
                 sample_rate = sr
                 if STREAM_RETURN_FULL:
@@ -541,7 +550,13 @@ def _stream_design_segments(req: VoiceDesignRequest) -> StreamingResponse:
                     output_format=req.output_format,
                     extra_params=req.extra_params,
                 )
-                wav, sr = _run_voice_design(seg_req, streaming=True)
+                future = STREAM_EXECUTOR.submit(_run_voice_design, seg_req, True)
+                while True:
+                    try:
+                        wav, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
+                        break
+                    except concurrent.futures.TimeoutError:
+                        yield _sse_event("keepalive", {"index": idx, "total": total})
                 wav_np = _to_wav_array(wav)
                 sample_rate = sr
                 if STREAM_RETURN_FULL:
@@ -600,13 +615,20 @@ def _stream_clone_segments(
                 with ref_path.open("wb") as f:
                     f.write(ref_audio.file.read())
                 for idx, segment in enumerate(segments, start=1):
-                    wav, sr = _run_voice_clone_from_path(
+                    future = STREAM_EXECUTOR.submit(
+                        _run_voice_clone_from_path,
                         segment,
-                        ref_path=ref_path,
-                        ref_text=ref_text,
-                        speed=speed,
-                        streaming=True,
+                        ref_path,
+                        ref_text,
+                        speed,
+                        True,
                     )
+                    while True:
+                        try:
+                            wav, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
+                            break
+                        except concurrent.futures.TimeoutError:
+                            yield _sse_event("keepalive", {"index": idx, "total": total})
                     wav_np = _to_wav_array(wav)
                     sample_rate = sr
                     if STREAM_RETURN_FULL:

@@ -225,6 +225,11 @@ async function runStreamSegments({
         showMessage(messageId, `开始生成，共 ${total || "?"} 段。`, "warn");
         return;
       }
+      if (event === "keepalive") {
+        const progress = total ? `${received}/${total}` : `${received}`;
+        showMessage(messageId, `处理中... (${progress})`, "warn");
+        return;
+      }
       if (event === "chunk") {
         received += 1;
         if (payload.audio_b64) {
