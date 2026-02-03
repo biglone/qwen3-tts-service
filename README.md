@@ -154,6 +154,7 @@ Segment streaming: `POST /v1/tts/clone/stream_segments`
 - `QWEN_TTS_STREAM_SEGMENT_MIN_CHARS` (default `20`)
 - `QWEN_TTS_STREAM_RETURN_FULL` (default `true`)
 - `QWEN_TTS_STREAM_KEEPALIVE_SECONDS` (default `8`)
+- `QWEN_TTS_STREAM_BATCH_SIZE` (default `1`)
 - `QWEN_TTS_WARMUP` (default `true`)
 - `QWEN_TTS_WARMUP_TEXT` (default `hello`)
 - `QWEN_TTS_WARMUP_VOICE` (default `vivian`)

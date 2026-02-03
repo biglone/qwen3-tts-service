@@ -68,6 +68,7 @@ STREAM_SEGMENT_MIN_CHARS = int(os.getenv("QWEN_TTS_STREAM_SEGMENT_MIN_CHARS", "2
 STREAM_RETURN_FULL = os.getenv("QWEN_TTS_STREAM_RETURN_FULL", "true").lower() == "true"
 STREAM_KEEPALIVE_SECONDS = float(os.getenv("QWEN_TTS_STREAM_KEEPALIVE_SECONDS", "8"))
 MAX_NEW_TOKENS = os.getenv("QWEN_TTS_MAX_NEW_TOKENS")
+STREAM_BATCH_SIZE = max(int(os.getenv("QWEN_TTS_STREAM_BATCH_SIZE", "1")), 1)
 
 
 MODEL_IDS = {
@@ -396,6 +397,36 @@ def _run_custom_voice(
     return _run_inference(model.generate_custom_voice, **kwargs)
 
 
+def _run_custom_voice_batch(
+    req: CustomVoiceRequest,
+    texts: list[str],
+    streaming: bool = False,
+) -> Tuple[list[np.ndarray], int]:
+    model = MODEL_MANAGER.get("custom")
+    voice = req.voice.strip().lower()
+    if voice not in CUSTOM_VOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported voice: {req.voice}. Supported: {CUSTOM_VOICES}",
+        )
+    batch = len(texts)
+    kwargs: Dict[str, Any] = {
+        "text": texts,
+        "voice": [voice] * batch,
+        "speaker": [voice] * batch,
+        "speed": req.speed,
+        "non_streaming_mode": not streaming,
+    }
+    if req.language:
+        kwargs["language"] = [req.language] * batch
+    if req.extra_params:
+        kwargs.update(req.extra_params)
+    if MAX_NEW_TOKENS:
+        kwargs["max_new_tokens"] = int(MAX_NEW_TOKENS)
+    kwargs = _filter_kwargs(model.generate_custom_voice, kwargs)
+    return _run_inference(model.generate_custom_voice, **kwargs)
+
+
 def _run_voice_design(
     req: VoiceDesignRequest,
     streaming: bool = False,
@@ -404,6 +435,27 @@ def _run_voice_design(
     kwargs: Dict[str, Any] = {
         "text": req.text,
         "prompt_text": req.prompt_text,
+        "speed": req.speed,
+        "non_streaming_mode": not streaming,
+    }
+    if req.extra_params:
+        kwargs.update(req.extra_params)
+    if MAX_NEW_TOKENS:
+        kwargs["max_new_tokens"] = int(MAX_NEW_TOKENS)
+    kwargs = _filter_kwargs(model.generate_voice_design, kwargs)
+    return _run_inference(model.generate_voice_design, **kwargs)
+
+
+def _run_voice_design_batch(
+    req: VoiceDesignRequest,
+    texts: list[str],
+    streaming: bool = False,
+) -> Tuple[list[np.ndarray], int]:
+    model = MODEL_MANAGER.get("design")
+    batch = len(texts)
+    kwargs: Dict[str, Any] = {
+        "text": texts,
+        "prompt_text": [req.prompt_text] * batch,
         "speed": req.speed,
         "non_streaming_mode": not streaming,
     }
@@ -487,37 +539,47 @@ def _stream_custom_segments(req: CustomVoiceRequest) -> StreamingResponse:
             yield _sse_event("meta", {"segments": total, "format": req.output_format})
             wav_parts: list[np.ndarray] = []
             sample_rate: Optional[int] = None
-            for idx, segment in enumerate(segments, start=1):
+            for start in range(0, total, STREAM_BATCH_SIZE):
+                batch_segments = segments[start : start + STREAM_BATCH_SIZE]
                 seg_req = CustomVoiceRequest(
-                    text=segment,
+                    text=batch_segments[0],
                     voice=req.voice,
                     language=req.language,
                     speed=req.speed,
                     output_format=req.output_format,
                     extra_params=req.extra_params,
                 )
-                future = STREAM_EXECUTOR.submit(_run_custom_voice, seg_req, True)
+                future = STREAM_EXECUTOR.submit(
+                    _run_custom_voice_batch,
+                    seg_req,
+                    batch_segments,
+                    True,
+                )
                 while True:
                     try:
-                        wav, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
+                        wavs, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
                         break
                     except concurrent.futures.TimeoutError:
-                        yield _sse_event("keepalive", {"index": idx, "total": total})
-                wav_np = _to_wav_array(wav)
+                        yield _sse_event(
+                            "keepalive",
+                            {"index": start + 1, "total": total},
+                        )
                 sample_rate = sr
-                if STREAM_RETURN_FULL:
-                    wav_parts.append(wav_np)
-                audio_bytes = _encode_audio(wav_np, sr, req.output_format)
-                payload = {
-                    "index": idx,
-                    "total": total,
-                    "text": segment,
-                    "format": req.output_format,
-                    "sample_rate": sr,
-                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
-                    "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
-                }
-                yield _sse_event("chunk", payload)
+                for offset, segment in enumerate(batch_segments):
+                    wav_np = _to_wav_array(wavs[offset])
+                    if STREAM_RETURN_FULL:
+                        wav_parts.append(wav_np)
+                    audio_bytes = _encode_audio(wav_np, sr, req.output_format)
+                    payload = {
+                        "index": start + offset + 1,
+                        "total": total,
+                        "text": segment,
+                        "format": req.output_format,
+                        "sample_rate": sr,
+                        "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                        "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
+                    }
+                    yield _sse_event("chunk", payload)
             if STREAM_RETURN_FULL and wav_parts and sample_rate:
                 full_wav = np.concatenate(wav_parts)
                 audio_bytes = _encode_audio(full_wav, sample_rate, req.output_format)
@@ -549,36 +611,46 @@ def _stream_design_segments(req: VoiceDesignRequest) -> StreamingResponse:
             yield _sse_event("meta", {"segments": total, "format": req.output_format})
             wav_parts: list[np.ndarray] = []
             sample_rate: Optional[int] = None
-            for idx, segment in enumerate(segments, start=1):
+            for start in range(0, total, STREAM_BATCH_SIZE):
+                batch_segments = segments[start : start + STREAM_BATCH_SIZE]
                 seg_req = VoiceDesignRequest(
-                    text=segment,
+                    text=batch_segments[0],
                     prompt_text=req.prompt_text,
                     speed=req.speed,
                     output_format=req.output_format,
                     extra_params=req.extra_params,
                 )
-                future = STREAM_EXECUTOR.submit(_run_voice_design, seg_req, True)
+                future = STREAM_EXECUTOR.submit(
+                    _run_voice_design_batch,
+                    seg_req,
+                    batch_segments,
+                    True,
+                )
                 while True:
                     try:
-                        wav, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
+                        wavs, sr = future.result(timeout=STREAM_KEEPALIVE_SECONDS)
                         break
                     except concurrent.futures.TimeoutError:
-                        yield _sse_event("keepalive", {"index": idx, "total": total})
-                wav_np = _to_wav_array(wav)
+                        yield _sse_event(
+                            "keepalive",
+                            {"index": start + 1, "total": total},
+                        )
                 sample_rate = sr
-                if STREAM_RETURN_FULL:
-                    wav_parts.append(wav_np)
-                audio_bytes = _encode_audio(wav_np, sr, req.output_format)
-                payload = {
-                    "index": idx,
-                    "total": total,
-                    "text": segment,
-                    "format": req.output_format,
-                    "sample_rate": sr,
-                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
-                    "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
-                }
-                yield _sse_event("chunk", payload)
+                for offset, segment in enumerate(batch_segments):
+                    wav_np = _to_wav_array(wavs[offset])
+                    if STREAM_RETURN_FULL:
+                        wav_parts.append(wav_np)
+                    audio_bytes = _encode_audio(wav_np, sr, req.output_format)
+                    payload = {
+                        "index": start + offset + 1,
+                        "total": total,
+                        "text": segment,
+                        "format": req.output_format,
+                        "sample_rate": sr,
+                        "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                        "duration_ms": int(len(wav_np) / max(sr, 1) * 1000),
+                    }
+                    yield _sse_event("chunk", payload)
             if STREAM_RETURN_FULL and wav_parts and sample_rate:
                 full_wav = np.concatenate(wav_parts)
                 audio_bytes = _encode_audio(full_wav, sample_rate, req.output_format)
