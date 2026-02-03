@@ -1,0 +1,33 @@
+services:
+  qwen3-tts:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.09-py3}
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      HTTP_PROXY: http://host.docker.internal:7890
+      HTTPS_PROXY: http://host.docker.internal:7890
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,hf-mirror.com
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HUB_DISABLE_XET: "1"
+      QWEN_TTS_CUSTOM_MODEL_ID: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+      QWEN_TTS_DESIGN_MODEL_ID: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+      QWEN_TTS_CLONE_MODEL_ID: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+      QWEN_TTS_MODEL_CACHE_MAX: "1"
+      QWEN_TTS_PRELOAD: "custom"
+      QWEN_TTS_WARMUP: "true"
+      QWEN_TTS_WARMUP_TEXT: "hello"
+      QWEN_TTS_WARMUP_VOICE: "vivian"
+      QWEN_TTS_DTYPE: float16
+      QWEN_TTS_DEVICE_MAP: auto
+      HF_HOME: /models
+      TRANSFORMERS_CACHE: /models
+    volumes:
+      - ./models:/models
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "18180:8000"

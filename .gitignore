@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+
+# Virtual env
+.venv/
+venv/
+
+# Env files
+.env
+
+# Local artifacts
+models/
+hf_download_progress.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
