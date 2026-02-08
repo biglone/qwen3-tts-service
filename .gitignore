@@ -19,6 +19,8 @@ venv/
 models/
 hf_download_progress.log
 *.log
+out.wav
+out2.wav
 
 # OS / editor
 .DS_Store
