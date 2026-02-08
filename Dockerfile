@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.09-py3
+ARG BASE_IMAGE=qwen3-tts:cu130
 FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -10,42 +10,24 @@ RUN apt-get update \
         sox \
         libsox-dev \
         git \
-        cmake \
-        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /srv
 
-COPY requirements.txt /app/requirements.txt
-# Install base API dependencies (exclude qwen-tts to avoid pulling torchaudio/torch from PyPI).
-RUN grep -v '^qwen-tts' /app/requirements.txt > /tmp/requirements.base.txt \
+COPY requirements.txt /srv/requirements.txt
+# Install API dependencies (exclude qwen-tts to avoid pulling torch/torchaudio from PyPI).
+RUN grep -v '^qwen-tts' /srv/requirements.txt > /tmp/requirements.base.txt \
     && python -m pip install --no-cache-dir -r /tmp/requirements.base.txt \
     && rm /tmp/requirements.base.txt
-# Install qwen-tts dependencies except torchaudio/torch (built separately).
-RUN python -m pip install --no-cache-dir \
-        transformers==4.57.3 \
-        accelerate==1.12.0 \
-        gradio==5.3.0 \
-        onnxruntime==1.23.2 \
-        sox==1.5.0
-# Build torchaudio from source against NVIDIA PyTorch to keep GPU support.
-RUN git clone --depth 1 --branch v2.9.0 https://github.com/pytorch/audio.git /tmp/torchaudio \
-    && cd /tmp/torchaudio \
-    && python -m pip install --no-deps --no-build-isolation . \
-    && cd / \
-    && rm -rf /tmp/torchaudio
-# Install qwen-tts itself without pulling dependencies.
-RUN python -m pip install --no-cache-dir --no-deps qwen-tts==0.0.5
-# Avoid torchvision import errors in transformers when torchvision ops are unavailable.
-RUN python -m pip uninstall -y torchvision || true
-
-COPY app /app/app
+COPY app /srv/app
 
 EXPOSE 8000
 
 ENV QWEN_TTS_MODEL_CACHE_MAX=1 \
     QWEN_TTS_PRELOAD=custom \
-    QWEN_TTS_DEVICE_MAP=auto \
-    QWEN_TTS_DTYPE=float16
+    QWEN_TTS_DEVICE_MAP=cuda:0 \
+    QWEN_TTS_DTYPE=bfloat16 \
+    QWEN_TTS_ATTN_IMPLEMENTATION=flash_attention_2 \
+    QWEN_TTS_FLASH_ATTN=true
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

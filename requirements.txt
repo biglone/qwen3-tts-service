@@ -1,6 +1,6 @@
 fastapi==0.128.0
 uvicorn[standard]==0.32.1
-qwen-tts==0.0.5
+qwen-tts==0.1.1
 soundfile==0.13.1
 pydub==0.25.1
-python-multipart==0.0.9
+python-multipart==0.0.22

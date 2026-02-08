@@ -3,17 +3,18 @@ services:
     build:
       context: .
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:25.09-py3}
+        BASE_IMAGE: ${BASE_IMAGE:-qwen3-tts:cu130}
     runtime: nvidia
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      LD_LIBRARY_PATH: /usr/lib/aarch64-linux-gnu/nvidia:/usr/local/cuda/targets/sbsa-linux/lib
       HTTP_PROXY: http://host.docker.internal:7890
       HTTPS_PROXY: http://host.docker.internal:7890
-      NO_PROXY: localhost,127.0.0.1,host.docker.internal,hf-mirror.com
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal
       HF_ENDPOINT: https://hf-mirror.com
       HF_HUB_DISABLE_XET: "1"
-      QWEN_TTS_CUSTOM_MODEL_ID: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+      QWEN_TTS_CUSTOM_MODEL_ID: /models/Qwen3-TTS-12Hz-1.7B-CustomVoice
       QWEN_TTS_DESIGN_MODEL_ID: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
       QWEN_TTS_CLONE_MODEL_ID: Qwen/Qwen3-TTS-12Hz-1.7B-Base
       QWEN_TTS_MODEL_CACHE_MAX: "1"
@@ -26,14 +27,20 @@ services:
       QWEN_TTS_STREAM_RETURN_FULL: "false"
       QWEN_TTS_STREAM_RETURN_LINK: "true"
       QWEN_TTS_STREAM_DOWNLOAD_TTL: "3600"
-      QWEN_TTS_MAX_NEW_TOKENS: "1024"
       QWEN_TTS_STREAM_BATCH_SIZE: "4"
-      QWEN_TTS_DTYPE: float16
+      QWEN_TTS_DTYPE: bfloat16
       QWEN_TTS_DEVICE_MAP: cuda:0
-      HF_HOME: /models
-      TRANSFORMERS_CACHE: /models
+      QWEN_TTS_ATTN_IMPLEMENTATION: flash_attention_2
+      QWEN_TTS_FLASH_ATTN: "true"
+      QWEN_TTS_AUTO_LANGUAGE: "false"
+      QWEN_TTS_TRIM_SILENCE: "false"
+      QWEN_TTS_TRIM_THRESHOLD_DB: "-45"
+      QWEN_TTS_TRIM_PAD_MS: "80"
+      HF_HOME: /hf-cache
+      TRANSFORMERS_CACHE: /hf-cache
     volumes:
-      - ./models:/models
+      - /home/Biglone/workspace/Qwen3-TTS/models:/models:ro
+      - ./models:/hf-cache
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

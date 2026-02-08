@@ -85,6 +85,11 @@
                 ></textarea>
               </label>
 
+              <label>
+                <span>指令 (可选)</span>
+                <input name="instruct" type="text" placeholder="例如：用特别温柔的语气说" />
+              </label>
+
               <div class="field-row">
                 <label>
                   <span>内置声音</span>
@@ -99,7 +104,7 @@
               <div class="field-row">
                 <label>
                   <span>语言 (可选)</span>
-                  <input name="language" type="text" placeholder="auto / zh / en" />
+                  <input name="language" type="text" placeholder="auto / chinese / english" />
                 </label>
                 <label>
                   <span>输出格式</span>
@@ -143,6 +148,11 @@
                   placeholder="例如：温柔、干净、略带磁性的男声"
                   required
                 />
+              </label>
+
+              <label>
+                <span>语言 (可选)</span>
+                <input name="language" type="text" placeholder="auto / chinese / english" />
               </label>
 
               <div class="field-row">
@@ -191,6 +201,16 @@
               <label>
                 <span>参考文本 (可选)</span>
                 <input name="ref_text" type="text" placeholder="参考音频对应的文本" />
+              </label>
+
+              <label>
+                <span>语言 (可选)</span>
+                <input name="language" type="text" placeholder="auto / chinese / english" />
+              </label>
+
+              <label class="toggle">
+                <input name="x_vector_only_mode" type="checkbox" value="true" />
+                <span>仅用说话人向量 (无需参考文本，效果会差一些)</span>
               </label>
 
               <div class="field-row">

@@ -340,6 +340,8 @@ async function handleCustomSubmit(event) {
     speed: Number(readFormValue(form, "speed")) || 1,
     output_format: readFormValue(form, "output_format") || "wav",
   };
+  const instruct = readFormValue(form, "instruct");
+  if (instruct) payload.instruct = instruct;
   const language = readFormValue(form, "language");
   if (language) payload.language = language;
 
@@ -394,6 +396,8 @@ async function handleDesignSubmit(event) {
     speed: Number(readFormValue(form, "speed")) || 1,
     output_format: readFormValue(form, "output_format") || "wav",
   };
+  const language = readFormValue(form, "language");
+  if (language) payload.language = language;
 
   if (isStreamEnabled(form)) {
     await runStreamSegments({
@@ -442,6 +446,12 @@ async function handleCloneSubmit(event) {
   resetResult("clone", "cloneDownload", "cloneMessage");
   const formData = new FormData(form);
   const outputFormat = formData.get("output_format") || "wav";
+  const useXvec = formData.get("x_vector_only_mode") === "true";
+  const refText = formData.get("ref_text");
+  if (!useXvec && (!refText || !String(refText).trim())) {
+    showMessage("cloneMessage", "未勾选仅用说话人向量时必须提供参考文本。", "bad");
+    return;
+  }
 
   if (isStreamEnabled(form)) {
     await runStreamSegments({
